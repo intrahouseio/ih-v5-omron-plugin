@@ -1,0 +1,6 @@
+{
+    "id":"omronfins",
+    "description":"Omron FINS (TCP)",
+    "cross":true,
+    "version":"5.0.0"
+}
