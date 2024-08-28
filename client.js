@@ -3,113 +3,439 @@
  */
 
 const util = require('util');
-
 const fins = require('omron-fins');
 
+const tools = require('./tools');
 
-let variables = {};
+const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
-module.exports = {
-  conn: {},
-  varChan: {},
-  variables: {},
-
-  init(plugin) {
+class Client {
+  constructor(plugin, params, idx) {
     this.plugin = plugin;
-    const options = { timeout: 5000, max_queue: 2, protocol: 'tcp' }
-    this.conn = fins.FinsClient(Number(this.plugin.params.data.port), this.plugin.params.data.host, options, false);
-  },
+    this.params = params;
+    this.idx = idx;
 
+    this.isOpen = false;
+    this.conn = {};
 
-  addItems(arr) {
-    const numsAndStringsSort = (a, b) => a.address.localeCompare(b.address, 'en', { numeric: true });
-    const sortedArr = arr.sort(numsAndStringsSort);
-    let cnt = 0;
-    let index = 0 
-    for(i=0; i<sortedArr.length; i++) {
-      let item = sortedArr[i];
-      if (this.variables[index] == undefined) this.variables[index] = [];
-      if (this.varChan[index] == undefined) this.varChan[index] = [];
-      if (cnt == 50) {
-        this.variables[index].push(item.address);
-        this.varChan[index].push({id: item.id, title: item.chan});
-        cnt = 0;
-        index++;
-      } else {
-        cnt++;
-        this.variables[index].push(item.address);
-        this.varChan[index].push({id: item.id, title: item.chan});
-      }
-    }  
-  },
-
-  removeItems(i, j) {
-    this.variables[i].splice(j, 1);  
-    this.varChan[i].splice(j, 1);
-  },
+    this.polls = [];
+    this.queue = [];
+    this.channelsChstatus = {};
+    this.channelsData = {};
+    this.qToWrite = []; // Очередь на запись 
+    this.qToWriteRead = [];
+    this.qToRead = [];
+    this.message = {};
+  }
 
   async connect() {
-    const host = this.plugin.params.data.host;
-    const port = Number(this.plugin.params.data.port);
-
-    this.plugin.log('Try connect to ' + host + ':' + port);
-    
-    return new Promise((resolve, reject) => {
-      this.conn.connect();
+    const host = this.params.host;
+    const port = Number(this.params.port);
+    const options = { timeout: 5000, max_queue: 2, protocol: 'tcp' }
+    this.clientLog('Try connect to ' + host + ':' + port);
+    this.conn = fins.FinsClient(port, host, options, true);
+    return new Promise((resolve, reject) => {  
+      const self = this;
       this.conn.on('open', function (info) {
+        self.isOpen = true;
+        self.clientLog('Connected ' + host + ':' + port);
         resolve(info);
       });
-      this.conn.on('error', function (error, msg) {
-        reject(error);
+      this.conn.on('close', function () {
+        self.isOpen = false;
+        let channelsStatus = [];
+        self.polls.forEach(item => {
+          item.ref.forEach(item1 => {
+            channelsStatus.push({ id: item1.id, chstatus: 1, title: item1.title })
+          })
+        })
+        self.plugin.sendData(channelsStatus);
+        self.plugin.exit(1, 'Client ' + self.idx + ' disconnected');
       });
+      
+      this.conn.on('error', e => {
+        self.isOpen = false;
+        self.clientLog('Error ' + e);
+        reject("error " + e);
+      });
+
       this.conn.on('timeout', function (host, msg) {
         reject(host + " timeout");
       });
-
+      
     });
-  },
+  }
 
-  readAll(channels, ids) {
-    return new Promise((resolve, reject) => {
-      const timerId = setTimeout(resTimeout.bind(this), this.plugin.params.data.timeout);
-      /*this.conn.readMultiple(channels, function(err) {
-        if (err) reject({ message: err});
-      }, ids)*/
-      this.conn.readMultiple(channels, null, ids)
-      this.conn.on('reply', function getData(msg) {
-        this.removeListener('data', getData);
-        clearTimeout(timerId);
-        resolve(msg);
-      });
-      function resTimeout() {
-        this.plugin.log("Timeout");
-        reject({ message: 'Timeout: ' + this.plugin.params.data.timeout });
-      } 
-    });
-  },
 
-  write(items, values) {
-    return new Promise((resolve, reject) => {
-      this.conn.write(items, values, (err, msg )=> {
-        if (err) {
-          reject(err);
-        } else {
-          resolve(msg);
+  setPolls(polls) {
+    this.polls = polls;
+    this.chanValues = {};
+  }
+
+  setWriteRead(message) {
+    this.qToWriteRead = tools.getWriteRequests(message.values, this.params);
+    this.message = { unit: message.unit, param: message.param, sender: message.sender, type: message.type, uuid: message.uuid };
+    // this.plugin.log('channels: ' + util.inspect(this.qToWriteRead), 2);
+  }
+
+  setRead(message) {
+    this.qToRead = tools.getRequests(message.values, this.params);
+    this.message = { unit: message.unit, param: message.param, sender: message.sender, type: message.type, uuid: message.uuid };
+    // this.clientLog('message ' + util.inspect(this.qToRead), 2);
+  }
+
+  setWrite(data) {
+    try {
+      data.forEach(aitem => {
+        if (aitem) {
+          this.plugin.log('chanItem: ' + util.inspect(aitem), 2);
+          const item = tools.formWriteObject(aitem, this.params);
+          if (item && item.vartype) {
+            this.qToWrite.push(item);
+            this.plugin.log(`Command to write: ${util.inspect(this.qToWrite)}`, 2);
+          } else {
+            this.plugin.log('ERROR: Command has empty vartype: ' + util.inspect(item), 2);
+          }
         }
       });
+    } catch (err) {
+      this.checkError(err);
+    }
+  }
+
+  async sendNext(single) {
+    // this.clientLog('sendNext');
+    if (!this.isOpen) {
+      let channelsStatus = [];
+      this.polls.forEach(item => {
+        item.ref.forEach(item1 => {
+          channelsStatus.push({ id: item1.id, chstatus: 1, title: item1.title })
+        })
+      })
+      this.plugin.sendData(channelsStatus);
+      this.plugin.exit(1, 'Port not open!!!!');
+    }
+
+    let isOnce = false;
+    if (typeof single !== undefined && single === true) {
+      isOnce = true;
+    }
+
+    let item;
+    if (this.qToWriteRead.length) {
+      item = this.qToWriteRead.shift();
+      return this.writeReadRequest(item, !isOnce);
+    }
+
+    if (this.qToWrite.length) {
+      item = this.qToWrite.shift();
+      return this.write(item, !isOnce);
+    }
+
+    if (this.qToRead.length) {
+      item = this.qToRead.shift();
+      return this.readRequest(item, !isOnce);
+    }
+
+
+    if (this.queue.length <= 0) {
+      this.polls.forEach(pitem => {
+        if (pitem.curpoll < pitem.polltimefctr) {
+          pitem.curpoll++;
+        } else {
+          pitem.curpoll = 1;
+        }
+      });
+      this.queue = tools.getPollArray(this.polls);
+    }
+
+    item = this.queue.shift();
+    if (typeof item !== 'object') {
+      item = this.polls[item];
+    }
+
+    if (item) {
+      return this.read(item, !isOnce);
+    }
+
+    await sleep(this.params.polldelay || 1);
+    setImmediate(() => {
+      this.sendNext();
     });
-  },
+  }
+
+  async read(item, allowSendNext) {
+    this.clientLog(
+      `READ: Class = ${item.adrclass}, address = ${tools.showAddress(item.address)}, length = ${item.length}`,
+      1
+    );
+
+    try {
+      let res = await this.readCommand(item.adrclass, item.address, item.length, item.ref);
+      if (res && res.buffer) {
+        const data = tools.getDataFromResponse(res.buffer, item.ref);
+        data.forEach(el => {
+          if (isNaN(el.value)) {
+            el.chstatus = 1;
+          }
+          this.channelsChstatus[el.id] = el.chstatus;
+        });
+
+        if (this.params.sendChanges == 1) {
+          let arr = data.filter(ditem => {
+            if (this.channelsData[ditem.id] != ditem.value) {
+              this.channelsData[ditem.id] = ditem.value;
+              return true;
+            }
+            return false;
+          });
+          if (arr.length > 0) this.plugin.sendData(arr);
+        } else {
+          this.plugin.sendData(data);
+        }
+
+        // this.plugin.log(res.buffer, 2);
+      }
+    } catch (err) {
+      this.checkError(err);
+    }
+
+    if (this.qToWrite.length || allowSendNext) {
+      if (!this.qToWrite.length) {
+        await sleep(this.params.polldelay || 1); // Интервал между запросами
+      }
+      setImmediate(() => {
+        this.sendNext();
+      });
+    }
+  }
+
+  async readCommand(adrclass, address, length, ref) {
+    try {
+      return await this.readRegisters(adrclass, address, length);
+    } catch (err) {
+      let charr = ref.map(item => ({ id: item.id, chstatus: 1, title: item.title }));
+      charr.forEach(el => {
+        this.channelsChstatus[el.id] = 1;
+      });
+      this.plugin.sendData(charr);
+      this.checkError(err);
+    }
+  }
+
+  checkError(e) {
+    // TODO - выход пока заглушен!
+    let exitCode = 0;
+    if (e.errno && networkErrors.includes(e.errno)) {
+      this.clientLog(`Network ERROR: ${e.errno}`, 1);
+      exitCode = 1;
+      this.plugin.exit(exitCode, util.inspect(e));
+    }
+    if (e.message.includes("Timeout")) {
+      exitCode = 2;
+      this.plugin.exit(exitCode, util.inspect(e));
+    }
+    else {
+      this.clientLog('ERROR: ' + util.inspect(e), 1);
+
+      // TODO Если все каналы c chstatus=1 - перезагрузить плагин?
+      /*
+      for (const item of this.channels) {
+        if (!this.channelsChstatus[item.id]) return;
+      }
+      */
+      this.clientLog('All channels have bad status! Exit with code 42', 1);
+      exitCode = 42;
+    }
+    //this.plugin.exit(exitCode, util.inspect(e));
+    //process.exit(exitCode);
+    return exitCode;
+  }
+
+  readRegisters(adrclass, address, length) {
+    return new Promise((resolve, reject) => {
+      let addr = adrclass + address;
+
+      this.conn.read(addr, length, null);
+      const timerId = setTimeout(resTimeout, this.params.timeout);
+      let self = this.plugin;
+      this.conn.on('reply', function getData(data) {
+        clearTimeout(timerId);
+        this.removeListener('reply', getData);
+        resolve({buffer: data.response.buffer});
+      });
+      function resTimeout() {
+        this.isOpen = false;
+        reject({ message: 'Timeout: ' + this.params.timeout })
+      }
+    });
+  }
+
+  async writeReadRequest(item, allowSendNext) {
+    const mismatched = [];
+    try {
+      const resWrite = await this.writeRegisters(item.adrclass, item.address, item.bufdata);
+      const resRead = await this.readRegisters(item.adrclass, item.address, item.length);
+      const dataRead = tools.getCorrectDataFromResponse(resRead.buffer, item.ref);
+
+      dataRead.forEach(ritem => {
+        if (ritem.value != ritem.writeValue) {
+          this.qToWriteRead = [];
+          mismatched.push(`${item.title} writeValue = ${ritem.writeValue} readValue = ${ritem.value}`);
+        }
+      });
+      this.plugin.sendData(dataRead);
+      // this.clientLog(`Read result: ${util.inspect(resRead)}`, 1);
+    } catch (err) {
+      this.checkError(err);
+    }
+
+    if (!this.qToWriteRead.length) {
+      if (mismatched.length) {
+        this.message.result = "Write/Read mismatch, items: " + mismatched.join('; ');
+        this.plugin.sendResponse(this.message, 0);
+      } else {
+        this.message.result = "Write/Read Ok";
+        this.plugin.sendResponse(this.message, 1);
+      }
+    }
+
+    if (this.qToWriteRead.length || allowSendNext) {
+      if (!this.qToWriteRead.length) {
+        await sleep(this.params.polldelay || 10); // Интервал между запросами
+      }
+
+      setImmediate(() => {
+        this.sendNext();
+      });
+    }
+  }
+
+  async readRequest(item, allowSendNext) {
+    try {
+      const res = await this.readRegisters(item.adrclass, item.address, item.length);
+      if (res && res.buffer) {
+
+        const data = tools.getDataFromResponse(res.buffer, item.ref);
+        this.plugin.sendData(data);
+      }
+    } catch (error) {
+      this.message.result = "Read Fail";
+      this.plugin.sendResponse(this.message, 1);
+      this.checkError(error);
+    }
+
+    if (this.qToRead.length == 0) {
+      this.message.result = "Read Ok";
+      this.plugin.sendResponse(this.message, 1);
+    }
+
+
+    if (this.qToRead.length || allowSendNext) {
+      if (!this.qToRead.length) {
+        await sleep(this.params.polldelay || 10); // Интервал между запросами
+      }
+
+      setImmediate(() => {
+        this.sendNext();
+      });
+    }
+  }
+
+  async write(item, allowSendNext) {
+    let fcw = item.vartype == 'bool' ? 5 : 6;
+    this.clientLog('WRITE FCW: ' + item.fcw, 2);
+    let val = item.value;
+    /*if (fcw == 6) {
+      val = tools.writeValue(item.value, item);
+    }*/
+    this.clientLog(
+      `WRITE: Class = ${item.adrclass}, address = ${tools.showAddress(item.address)}, value = ${util.inspect(val)}`,
+      1
+    );
+
+    // Результат на запись - принять!!
+    try {
+      let res = await this.writeCommand(item.offset, item.adrclass, item.address, val, item);
+      //this.plugin.sendData([{ id: item.id, value: val }]);
+      // Получили ответ при записи
+      this.clientLog(`Write result: ${util.inspect(res)}`, 1);
+
+      if (item.force) {
+        let res = await this.readRegisters(item.adrclass, resWrite.address, resWrite.length);
+        item.widx = 0;
+        let value = tools.readValue(res.buffer, item);
+        this.clientLog(`Read result: ${util.inspect(value)}`, 1);
+        // Если канал получает данные по запросу, то отправлять сразу после записи
+        this.plugin.sendData([{ id: item.id, value: value }]);
+      }
+    } catch (err) {
+      this.checkError(err);
+    }
+
+    if (this.qToWrite.length || allowSendNext) {
+      if (!this.qToWrite.length) {
+        await sleep(this.params.polldelay || 1); // Интервал между запросами
+      }
+      setImmediate(() => {
+        this.sendNext();
+      });
+    }
+  }
+
+  async writeCommand(offset, adrclass, address, value) {
+    try {
+      if (offset != undefined) {
+        this.clientLog(
+          `writeDiscretes: address = ${tools.showAddress(address)}, offset = ${offset} value = ${value}`,
+          1
+        );
+        let adr = address + "." + offset
+        return await this.writeRegisters(adrclass, adr, value);
+      }
+
+
+      this.clientLog(`writeRegisters: address = ${tools.showAddress(address)}, value = ${util.inspect(value)}`, 1);
+      return await this.writeRegisters(adrclass, address, value);
+    } catch (err) {
+      this.checkError(err);
+    }
+  }
+
+  writeRegisters(adrclass, address, value) {
+    return new Promise((resolve, reject) => {    
+      let addr = adrclass + address;
+
+      this.conn.write(addr, value);
+      const timerId = setTimeout(resTimeout, this.params.timeout);
+      let self = this.plugin;
+      this.conn.on('reply', function getData(data) {
+        clearTimeout(timerId);
+        self.log("data " + util.inspect(data, null, 4))
+        this.removeListener('reply', getData);
+        resolve("Write Ok");
+      });
+      function resTimeout() {
+        this.isOpen = false;
+        reject({ message: 'Timeout: ' + this.params.timeout })
+      }
+    });
+  }
 
   close() {
     return new Promise((resolve, reject) => {
-      this.conn.disconnect();
-      this.conn.on('close', function (info) {
-        resolve();
+      this.conn.disconnect(err => {
+        if (err) {
+          reject(err);
+        } else {
+          resolve();
+        }
       });
     });
-  },
-
-  sleep(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
   }
-};
+
+  clientLog(txt, level = 0) {
+    this.plugin.log('Client ' + this.idx + ' ' + txt, level, 1)
+  }
+}
+module.exports = Client;
