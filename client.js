@@ -34,7 +34,7 @@ class Client {
     const options = { timeout: 5000, max_queue: 2, protocol: 'tcp' }
     this.clientLog('Try connect to ' + host + ':' + port);
     this.conn = fins.FinsClient(port, host, options, true);
-    return new Promise((resolve, reject) => {  
+    return new Promise((resolve, reject) => {
       const self = this;
       this.conn.on('open', function (info) {
         self.isOpen = true;
@@ -52,7 +52,7 @@ class Client {
         self.plugin.sendData(channelsStatus);
         self.plugin.exit(1, 'Client ' + self.idx + ' disconnected');
       });
-      
+
       this.conn.on('error', e => {
         self.isOpen = false;
         self.clientLog('Error ' + e);
@@ -62,14 +62,14 @@ class Client {
       this.conn.on('timeout', function (host, msg) {
         reject(host + " timeout");
       });
-      
+
     });
   }
 
 
   setPolls(polls) {
     this.polls = polls;
-    this.chanValues = {};
+    this.channelsData = {};
   }
 
   setWriteRead(message) {
@@ -262,7 +262,7 @@ class Client {
       this.conn.on('reply', function getData(data) {
         clearTimeout(timerId);
         this.removeListener('reply', getData);
-        resolve({buffer: data.response.buffer});
+        resolve({ buffer: data.response.buffer });
       });
       function resTimeout() {
         this.isOpen = false;
@@ -343,12 +343,23 @@ class Client {
   }
 
   async write(item, allowSendNext) {
-    let fcw = item.vartype == 'bool' ? 5 : 6;
-    this.clientLog('WRITE FCW: ' + item.fcw, 2);
-    let val = item.value;
-    /*if (fcw == 6) {
-      val = tools.writeValue(item.value, item);
-    }*/
+    let val = [];
+    let adr;
+    if (item.offset != undefined) {
+      this.clientLog(
+        `writeDiscretes: address = ${tools.showAddress(item.address)}, offset = ${item.offset} value = ${item.value}`,
+        1
+      );
+      adr = item.address + "." + item.offset;
+      val = item.value;
+    } else {
+      adr = item.address;
+      const buf = tools.writeValue(item.value, item);
+      for (let i = 0; i < buf.length; i = i + 2) {
+        val.push(buf.readUInt16BE(i));
+      }
+    }
+
     this.clientLog(
       `WRITE: Class = ${item.adrclass}, address = ${tools.showAddress(item.address)}, value = ${util.inspect(val)}`,
       1
@@ -356,7 +367,7 @@ class Client {
 
     // Результат на запись - принять!!
     try {
-      let res = await this.writeCommand(item.offset, item.adrclass, item.address, val, item);
+      let res = await this.writeCommand(item.adrclass, adr, val);
       //this.plugin.sendData([{ id: item.id, value: val }]);
       // Получили ответ при записи
       this.clientLog(`Write result: ${util.inspect(res)}`, 1);
@@ -383,18 +394,8 @@ class Client {
     }
   }
 
-  async writeCommand(offset, adrclass, address, value) {
+  async writeCommand(adrclass, address, value) {
     try {
-      if (offset != undefined) {
-        this.clientLog(
-          `writeDiscretes: address = ${tools.showAddress(address)}, offset = ${offset} value = ${value}`,
-          1
-        );
-        let adr = address + "." + offset
-        return await this.writeRegisters(adrclass, adr, value);
-      }
-
-
       this.clientLog(`writeRegisters: address = ${tools.showAddress(address)}, value = ${util.inspect(value)}`, 1);
       return await this.writeRegisters(adrclass, address, value);
     } catch (err) {
@@ -403,7 +404,7 @@ class Client {
   }
 
   writeRegisters(adrclass, address, value) {
-    return new Promise((resolve, reject) => {    
+    return new Promise((resolve, reject) => {
       let addr = adrclass + address;
 
       this.conn.write(addr, value);
@@ -411,13 +412,17 @@ class Client {
       let self = this.plugin;
       this.conn.on('reply', function getData(data) {
         clearTimeout(timerId);
-        self.log("data " + util.inspect(data, null, 4))
         this.removeListener('reply', getData);
-        resolve("Write Ok");
+        if (data.response.endCode == '0000') {
+          resolve("Write Ok");
+        } else {
+          reject("Write Error code: " + data.response.endCode)
+        }
+        
       });
       function resTimeout() {
         this.isOpen = false;
-        reject({ message: 'Timeout: ' + this.params.timeout })
+        reject('Timeout: ' + this.params.timeout)
       }
     });
   }
