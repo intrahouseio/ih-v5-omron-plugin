@@ -38,7 +38,7 @@
   "prw": [
     { "prop": "r", "title": "$Read", "type": "cb" },
     { "prop": "w", "title": "$Write", "type": "cb" },
-    { "prop": "req", "title": "Request", "type": "cb", "hide": "!data.prw.r" }
+    { "prop": "req", "title": "Request", "type": "cb", "hide": "1==1" }
   ],
 
   "p2": [
@@ -54,21 +54,6 @@
       "title": "$vartype",
       "type": "droplist",
       "data": [
-        {
-          "id": "bool",
-          "title": "BOOL"
-        },
-
-        {
-          "id": "int8",
-          "title": "INT8, 1 байт"
-        },
-
-        {
-          "id": "uint8",
-          "title": "UINT8, 1 байт"
-        },
-
         {
           "id": "int16",
           "title": "INT16, 2 байта"
@@ -88,14 +73,13 @@
           "id": "uint32",
           "title": "UINT32, 4 байта"
         },
-
         {
           "id": "float",
           "title": "FLOAT, 4 байта"
         }
       ],
 
-      "default": "int16"
+      "default": "uint16"
     },
     
     {
