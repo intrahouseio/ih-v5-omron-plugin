@@ -450,39 +450,85 @@ function parseBufferRead(buffer, item) {
       buf[2] = buffer[offset * 2 + 3];
       buf[3] = buffer[offset * 2 + 2];
       return buf.readInt32BE(0);
-    case 'uint64be':
-      return Number(buffer.readBigUInt64BE(offset * 2));
-    case 'uint64le':
-      return Number(buffer.readBigUInt64LE(offset * 2));
-    case 'int64be':
-      return Number(buffer.readBigInt64BE(offset * 2));
-    case 'int64le':
-      return Number(buffer.readBigInt64LE(offset * 2));
-    case 'floatbe':
-      return buffer.readFloatBE(offset * 2);
-    case 'floatle':
-      return buffer.readFloatLE(offset * 2);
-    case 'floatsw':
-      buf = Buffer.alloc(4);
-      buf[0] = buffer[offset * 2 + 2];
-      buf[1] = buffer[offset * 2 + 3];
-      buf[2] = buffer[offset * 2 + 0];
-      buf[3] = buffer[offset * 2 + 1];
-      return buf.readFloatBE(0);
-    case 'floatsb':
-      buf = Buffer.alloc(4);
-      buf[0] = buffer[offset * 2 + 1];
-      buf[1] = buffer[offset * 2 + 0];
-      buf[2] = buffer[offset * 2 + 3];
-      buf[3] = buffer[offset * 2 + 2];
-      return buf.readFloatBE(0);
-    case 'doublebe':
-      return buffer.readDoubleBE(offset * 2);
-    case 'doublele':
-      return buffer.readDoubleLE(offset * 2);
+      case 'uint64be':
+        return Number(buffer.readBigUInt64BE(offset * 2));
+      case 'uint64sw':
+        buf = Buffer.alloc(8);
+        //B7B8B5B6B3B4B1B2
+        buf[0] = buffer[offset * 2 + 6];
+        buf[1] = buffer[offset * 2 + 7];
+        buf[2] = buffer[offset * 2 + 4];
+        buf[3] = buffer[offset * 2 + 5];
+        buf[4] = buffer[offset * 2 + 2];
+        buf[5] = buffer[offset * 2 + 3];
+        buf[6] = buffer[offset * 2 + 0];
+        buf[7] = buffer[offset * 2 + 1];
+        return Number(buf.readBigUInt64BE())
+      case 'uint64le':
+        buf = Buffer.alloc(8);
+        buf = buffer.subarray(offset * 2, offset * 2 + 8);
+        buf.reverse();
+        return Number(buf.readBigUInt64BE());
+      case 'uint64sb':
+        buf = Buffer.alloc(8);
+        buf = buffer.subarray(offset * 2, offset * 2 + 8);
+        buf.reverse();
+        buf = reverseByte(buf);
+        return Number(buf.readBigUInt64BE());
+      case 'int64be':
+        return Number(buffer.readBigInt64BE(offset * 2));
+      case 'int64sw':
+        buf = Buffer.alloc(8);
+        //B7B8B5B6B3B4B1B2
+        buf[0] = buffer[offset * 2 + 6];
+        buf[1] = buffer[offset * 2 + 7];
+        buf[2] = buffer[offset * 2 + 4];
+        buf[3] = buffer[offset * 2 + 5];
+        buf[4] = buffer[offset * 2 + 2];
+        buf[5] = buffer[offset * 2 + 3];
+        buf[6] = buffer[offset * 2 + 0];
+        buf[7] = buffer[offset * 2 + 1];
+        return Number(buf.readBigInt64BE());
+      case 'int64le':
+        return Number(buffer.readBigInt64LE(offset * 2));
+      case 'int64sb':
+        buf = Buffer.alloc(8);
+        buf = buffer.subarray(offset * 2, offset * 2 + 8);
+        buf.reverse();
+        buf = reverseByte(buf);
+        return Number(buf.readBigInt64BE());
+      case 'floatbe':
+        return buffer.readFloatBE(offset * 2);
+      case 'floatle':
+        return buffer.readFloatLE(offset * 2);
+      case 'floatsw':
+        buf = Buffer.alloc(4);
+        buf[0] = buffer[offset * 2 + 2];
+        buf[1] = buffer[offset * 2 + 3];
+        buf[2] = buffer[offset * 2 + 0];
+        buf[3] = buffer[offset * 2 + 1];
+        return buf.readFloatBE(0);
+      case 'floatsb':
+        buf = Buffer.alloc(4);
+        buf[0] = buffer[offset * 2 + 1];
+        buf[1] = buffer[offset * 2 + 0];
+        buf[2] = buffer[offset * 2 + 3];
+        buf[3] = buffer[offset * 2 + 2];
+        return buf.readFloatBE(0);
+      case 'doublebe':
+        return buffer.readDoubleBE(offset * 2);
+      case 'doublele':
+        return buffer.readDoubleLE(offset * 2);
     default:
       throw new Error(`Invalid type: ${vartype}`);
   }
+}
+
+function reverseByte(buf) {
+  for (let i = 1; i < buf.length; i += 2) {
+    [buf[i], buf[i - 1]] = [buf[i - 1], buf[i]];
+  }
+  return buf
 }
 
 function readValue(buffer, item) {
@@ -614,6 +660,22 @@ function parseBufferWrite(value, item) {
       buffer = Buffer.alloc(8);
       buffer.writeBigUInt64LE(BigInt(value), 0);
       break;
+    case 'uint64sb':
+      buffer = Buffer.alloc(8);
+      buff = Buffer.alloc(8);
+      buff.writeBigUInt64BE(BigInt(value), 0);
+        //B7B8B5B6B3B4B1B2
+        buffer[0] = buff[6];
+        buffer[1] = buff[7];
+        buffer[2] = buff[4];
+        buffer[3] = buff[5];
+        buffer[4] = buff[2];
+        buffer[5] = buff[3];
+        buffer[6] = buff[0];
+        buffer[7] = buff[1];
+      
+
+      break;
     case 'int64be':
       buffer = Buffer.alloc(8);
       buffer.writeBigInt64BE(BigInt(value), 0);
@@ -718,8 +780,12 @@ function getVarLen(vartype) {
 
     case 'int64be':
     case 'int64le':
+    case 'int64sw':
+    case 'int64sb':
     case 'uint64be':
     case 'uint64le':
+    case 'uint64sw':
+    case 'uint64sb':  
     case 'doublebe':
     case 'doublele':
       return 4;

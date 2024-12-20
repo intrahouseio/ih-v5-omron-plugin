@@ -68,7 +68,15 @@
           "id": "int32",
           "title": "INT32, 4 байта"
         },
+        {
+          "id": "int64",
+          "title": "INT64, 8 байт"
+        },
 
+        {
+          "id": "uint64",
+          "title": "UINT64, 8 байт"
+        },
         {
           "id": "uint32",
           "title": "UINT32, 4 байта"
@@ -76,6 +84,10 @@
         {
           "id": "float",
           "title": "FLOAT, 4 байта"
+        },
+        {
+          "id": "double",
+          "title": "DOUBLE, 8 байт"
         }
       ],
 
