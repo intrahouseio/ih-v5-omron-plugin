@@ -502,6 +502,7 @@ function parseBufferRead(buffer, item) {
       case 'floatle':
         return buffer.readFloatLE(offset * 2);
       case 'floatsw':
+        //B3B4B1B2
         buf = Buffer.alloc(4);
         buf[0] = buffer[offset * 2 + 2];
         buf[1] = buffer[offset * 2 + 3];
@@ -517,8 +518,20 @@ function parseBufferRead(buffer, item) {
         return buf.readFloatBE(0);
       case 'doublebe':
         return buffer.readDoubleBE(offset * 2);
+      case 'doublesb':
+        buf = Buffer.alloc(8);
+        //B7B8B5B6B3B4B1B2
+        buf[0] = buffer[offset * 2 + 6];
+        buf[1] = buffer[offset * 2 + 7];
+        buf[2] = buffer[offset * 2 + 4];
+        buf[3] = buffer[offset * 2 + 5];
+        buf[4] = buffer[offset * 2 + 2];
+        buf[5] = buffer[offset * 2 + 3];
+        buf[6] = buffer[offset * 2 + 0];
+        buf[7] = buffer[offset * 2 + 1];
+        return buf.readDoubleBE();
       case 'doublele':
-        return buffer.readDoubleLE(offset * 2);
+        return buffer.readDoubleBE(offset * 2);
     default:
       throw new Error(`Invalid type: ${vartype}`);
   }
@@ -673,8 +686,6 @@ function parseBufferWrite(value, item) {
         buffer[5] = buff[3];
         buffer[6] = buff[0];
         buffer[7] = buff[1];
-      
-
       break;
     case 'int64be':
       buffer = Buffer.alloc(8);
@@ -715,6 +726,20 @@ function parseBufferWrite(value, item) {
     case 'doublebe':
       buffer = Buffer.alloc(8);
       buffer.writeDoubleBE(value, 0);
+      break;
+    case 'doublesb':
+      buffer = Buffer.alloc(8);
+      buff = Buffer.alloc(8);
+      buff.writeDoubleBE(value, 0);
+        //B7B8B5B6B3B4B1B2
+        buffer[0] = buff[6];
+        buffer[1] = buff[7];
+        buffer[2] = buff[4];
+        buffer[3] = buff[5];
+        buffer[4] = buff[2];
+        buffer[5] = buff[3];
+        buffer[6] = buff[0];
+        buffer[7] = buff[1];
       break;
     case 'doublele':
       buffer = Buffer.alloc(8);
@@ -788,6 +813,8 @@ function getVarLen(vartype) {
     case 'uint64sb':  
     case 'doublebe':
     case 'doublele':
+    case 'doublesb':
+    case 'doublesw':
       return 4;
     default:
       throw new Error(`Invalid type: ${vartype}`);
